@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useToast } from './useToast'
 
 export function useServices() {
@@ -12,6 +12,19 @@ export function useServices() {
         in_progress: services.value.filter(s => s.status === 'in_progress').length,
         completed: services.value.filter(s => s.status === 'completed').length
     }))
+
+    // Add visibility tracking
+    const isVisible = ref(document.visibilityState === 'visible')
+
+    // Handle visibility change
+    function handleVisibilityChange() {
+        isVisible.value = document.visibilityState === 'visible'
+        if (isVisible.value) {
+            startPolling() // Resume polling when visible
+        } else {
+            stopPolling() // Stop polling when hidden
+        }
+    }
 
     async function fetchServices() {
         try {
@@ -35,33 +48,30 @@ export function useServices() {
         }
     }
 
-    async function addService() {
-        try {
-            isLoading.value = true
-            const response = await fetch(serviceQueueAjax.ajax_url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: new URLSearchParams({
-                    action: 'add_service_request',
-                    nonce: serviceQueueAjax.nonce
-                })
+async function addService() {
+    try {
+        const response = await fetch(serviceQueueAjax.ajax_url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({
+                action: 'add_service_request',
+                nonce: serviceQueueAjax.nonce
             })
+        });
 
-            const data = await response.json()
-            if (data.success) {
-                showToast(data.data.message, 'success')
-                await fetchServices()
-            } else {
-                throw new Error(data.data.message)
-            }
-        } catch (error) {
-            showToast(error.message, 'error')
-        } finally {
-            isLoading.value = false
+        const data = await response.json();
+        if (data.success) {
+            showToast(data.data.message, 'success');
+            await fetchServices();
+        } else {
+            throw new Error(data.data.message);
         }
+    } catch (error) {
+        showToast(error.message, 'error');
     }
+}
 
     async function resetServices() {
         try {
@@ -120,8 +130,10 @@ export function useServices() {
     }
 
     function startPolling() {
-        fetchServices()
-        pollInterval.value = setInterval(fetchServices, 2000)
+        if (!pollInterval.value && isVisible.value) {
+            fetchServices()
+            pollInterval.value = setInterval(fetchServices, 2000)
+        }
     }
 
     function stopPolling() {
@@ -130,6 +142,17 @@ export function useServices() {
             pollInterval.value = null
         }
     }
+
+    // Add event listener for visibility changes
+    onMounted(() => {
+        document.addEventListener('visibilitychange', handleVisibilityChange)
+    })
+
+    // Clean up event listener
+    onUnmounted(() => {
+        document.removeEventListener('visibilitychange', handleVisibilityChange)
+        stopPolling()
+    })
 
     return {
         services,

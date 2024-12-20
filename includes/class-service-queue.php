@@ -110,6 +110,7 @@ class ServiceQueue
         try {
             $sql = "CREATE TABLE IF NOT EXISTS {$this->table_name} (
                 service_id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                user_id BIGINT(20) UNSIGNED NOT NULL,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 status ENUM('pending', 'in_progress', 'completed', 'error') DEFAULT 'pending',
                 processing_time INT UNSIGNED NOT NULL,
@@ -119,6 +120,7 @@ class ServiceQueue
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_status (status),
                 INDEX idx_timestamp (timestamp),
+                INDEX idx_user_status (user_id, status),
                 INDEX idx_status_timestamp (status, timestamp)
             ) $charset_collate;";
 
@@ -141,15 +143,40 @@ class ServiceQueue
         $this->verifyNonce();
 
         try {
+            global $wpdb;
+
+            // Check user limit
+            $current_user_id = get_current_user_id();
+            $user_pending_count = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$this->table_name}
+            WHERE status IN ('pending', 'in_progress')
+            AND user_id = %d",
+                $current_user_id
+            ));
+
+            if ($user_pending_count >= SERVICE_QUEUE_MAX_USER_REQUESTS) {
+                throw new Exception(__('You have reached the maximum number of concurrent requests.', 'service-queue'));
+            }
+
+            // Check global processing limit
+            $global_processing_count = $wpdb->get_var(
+                "SELECT COUNT(*) FROM {$this->table_name}
+            WHERE status = 'in_progress'"
+            );
+
+            if ($global_processing_count >= SERVICE_QUEUE_MAX_GLOBAL_PROCESSING) {
+                throw new Exception(__('System is currently at maximum processing capacity. Please try again later.', 'service-queue'));
+            }
+
             $processing_time = wp_rand(15, 30);
 
-            global $wpdb;
             $wpdb->query('START TRANSACTION');
 
             $result = $wpdb->insert($this->table_name, [
                 'status' => 'pending',
                 'processing_time' => $processing_time,
-                'progress' => 0
+                'progress' => 0,
+                'user_id' => $current_user_id
             ]);
 
             if ($result === false) {
@@ -159,7 +186,6 @@ class ServiceQueue
             $service_id = $wpdb->insert_id;
             $wpdb->query('COMMIT');
 
-            // Schedule the initial processing using Action Scheduler
             as_schedule_single_action(
                 time(),
                 'process_service_step',
