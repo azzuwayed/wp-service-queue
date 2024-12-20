@@ -1,0 +1,42 @@
+# Composer
+/vendor/
+composer.lock
+
+# Node modules if you add them later
+node_modules/
+package-lock.json
+
+# IDE specific files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Operating System specific files
+.DS_Store
+Thumbs.db
+
+# WordPress plugin specific
+*.log
+websocket.log
+*.zip
+
+# Environment specific
+.env
+.env.*
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# Build and dist directories if you add them later
+/dist/
+/build/
+
+# Cache
+*.cache
+
+# Test coverage
+/coverage/

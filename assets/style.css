@@ -119,8 +119,11 @@
     border-radius: 12px;
     padding: 1.5rem;
     border: 1px solid #dee2e6;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+        box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+        border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     position: relative;
+    will-change: transform, box-shadow, border-color;
 }
 
 .sq-service-card:hover {
@@ -166,23 +169,8 @@
     color: #0f5132;
 }
 
-
-.sq-progress:not(.sq-progress-completed) .sq-progress-bar::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: linear-gradient(90deg,
-            rgba(255, 255, 255, 0) 0%,
-            rgba(255, 255, 255, 0.2) 50%,
-            rgba(255, 255, 255, 0) 100%);
-    animation: shimmer 1.5s infinite;
-}
-
 .sq-progress {
-    background: #e9ecef !important;
+    background: #e9ecef;
     height: 10px;
     border-radius: 999px;
     overflow: hidden;
@@ -192,22 +180,27 @@
 
 .sq-progress-bar {
     height: 100%;
-    transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     position: relative;
+    background: linear-gradient(-45deg,
+            #0d6efd 25%,
+            #0b5ed7 25%,
+            #0b5ed7 50%,
+            #0d6efd 50%,
+            #0d6efd 75%,
+            #0b5ed7 75%,
+            #0b5ed7);
+    background-size: 20px 20px;
+    animation: progress-animation 1s linear infinite;
 }
 
-.sq-progress-bar::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: linear-gradient(90deg,
-            rgba(255, 255, 255, 0) 0%,
-            rgba(255, 255, 255, 0.2) 50%,
-            rgba(255, 255, 255, 0) 100%);
-    animation: shimmer 1.5s infinite;
+.sq-status-completed+.sq-progress .sq-progress-bar {
+    background: linear-gradient(90deg, #198754, #146c43);
+    animation: none;
+}
+
+.sq-status-pending+.sq-progress .sq-progress-bar {
+    background: linear-gradient(90deg, #ffc107, #ffca2c);
 }
 
 .sq-service-info {
@@ -227,7 +220,7 @@
     background: #212529;
     color: white;
     transform: translateY(150%);
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     z-index: 1000;
     max-width: 320px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
@@ -245,86 +238,21 @@
     background: #dc3545;
 }
 
-.sq-actions {
-    display: flex;
-    gap: 1rem;
-}
-
-/* Progress bar base styles */
-.sq-progress {
-    background: #e9ecef !important;
-    height: 10px !important;
-    border-radius: 999px !important;
-    overflow: hidden !important;
-    margin: 1.25rem 0 !important;
-    position: relative !important;
-}
-
-.sq-progress-bar {
-    height: 100% !important;
-    transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    position: relative !important;
-}
-
-/* Status-specific progress bar styles */
-.service-queue-app .sq-progress-bar {
-    background: linear-gradient(-45deg,
-            #0d6efd 25%,
-            #0b5ed7 25%,
-            #0b5ed7 50%,
-            #0d6efd 50%,
-            #0d6efd 75%,
-            #0b5ed7 75%,
-            #0b5ed7) !important;
-    background-size: 20px 20px !important;
-    animation: progress-animation 1s linear infinite !important;
-}
-
-.service-queue-app .sq-status-completed+.sq-progress .sq-progress-bar {
-    background: linear-gradient(90deg, #198754, #146c43) !important;
-    animation: none !important;
-}
-
-.service-queue-app .sq-status-pending+.sq-progress .sq-progress-bar {
-    background: linear-gradient(90deg, #ffc107, #ffca2c) !important;
-}
-
-/* Loading animation */
 .sq-loading::after {
-    content: '' !important;
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
-    background: linear-gradient(90deg,
-            transparent,
-            rgba(255, 255, 255, 0.3),
-            transparent) !important;
-    animation: loading 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite !important;
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+    animation: loading 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
-/* Shimmer effect for in-progress */
-.service-queue-app .sq-progress:not(.sq-progress-completed) .sq-progress-bar::after {
-    content: '' !important;
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    right: 0 !important;
-    bottom: 0 !important;
-    background: linear-gradient(90deg,
-            rgba(255, 255, 255, 0) 0%,
-            rgba(255, 255, 255, 0.2) 50%,
-            rgba(255, 255, 255, 0) 100%) !important;
-    animation: shimmer 1.5s infinite !important;
-}
-
-/* Pulse animation */
 .sq-pulse {
-    animation: pulse 2s cubic-bezier(0.4, 0, 0.2, 1) infinite !important;
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
-/* Animation keyframes */
 @keyframes loading {
     0% {
         transform: translateX(-100%);
@@ -360,30 +288,8 @@
     }
 }
 
-@keyframes shimmer {
-    0% {
-        transform: translateX(-100%);
-    }
-
-    100% {
-        transform: translateX(100%);
-    }
-}
-
 /* Dark mode support */
 @media (prefers-color-scheme: dark) {
-    .service-queue-app .sq-progress {
-        background: #2b3035 !important;
-    }
-
-    .service-queue-app .sq-progress-completed .sq-progress-bar {
-        background: linear-gradient(90deg, #20c997, #1aa179) !important;
-    }
-
-    .service-queue-app .sq-status-completed+.sq-progress .sq-progress-bar {
-        background: linear-gradient(90deg, #20c997, #1aa179) !important;
-    }
-
     .service-queue-app {
         background: #212529;
         box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
@@ -391,7 +297,6 @@
 
     .sq-stat-box {
         background: #343a40;
-        color: #fff;
     }
 
     .sq-label {
@@ -413,6 +318,10 @@
 
     .sq-service-info {
         color: #adb5bd;
+    }
+
+    .sq-progress {
+        background: #2b3035;
     }
 }
 

@@ -1,8 +1,14 @@
 class ServiceQueue {
     constructor() {
         this.services = new Map();
+        this.ws = null;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
         this.pollingInterval = null;
         this.isProcessing = false;
+        this.debounceTimeout = null;
+        this.fetchDebounceTime = 200;
+        this.pingInterval = null;
         this.init();
     }
 
@@ -10,7 +16,11 @@ class ServiceQueue {
         try {
             this.bindElements();
             this.bindEvents();
-            this.startPolling();
+            if (serviceQueueWS.enabled === '1') {
+                this.initWebSocket();
+            } else {
+                this.startPolling();
+            }
             this.fetchServices();
         } catch (error) {
             this.showToast('Failed to initialize application', 'error');
@@ -39,12 +49,84 @@ class ServiceQueue {
         document.addEventListener('visibilitychange', () => this.handleVisibilityChange());
     }
 
+    initWebSocket() {
+        const protocol = serviceQueueWS.secure ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${serviceQueueWS.host}:${serviceQueueWS.port}`;
+
+        try {
+            this.ws = new WebSocket(wsUrl);
+
+            this.ws.onopen = () => {
+                console.log('WebSocket connected');
+                this.reconnectAttempts = 0;
+                this.stopPolling();
+
+                this.ws.send(JSON.stringify({
+                    action: 'subscribe',
+                    queue_id: 'global'
+                }));
+
+                this.startPingInterval();
+            };
+
+            this.ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'service_update') {
+                        this.handleServiceUpdate(data.data);
+                    }
+                } catch (error) {
+                    console.error('WebSocket message error:', error);
+                }
+            };
+
+            this.ws.onclose = () => {
+                console.log('WebSocket disconnected, falling back to polling');
+                this.stopPingInterval();
+                this.startPolling();
+
+                if (this.reconnectAttempts < this.maxReconnectAttempts) {
+                    setTimeout(() => {
+                        this.reconnectAttempts++;
+                        this.initWebSocket();
+                    }, 3000);
+                }
+            };
+
+            this.ws.onerror = (error) => {
+                console.log('WebSocket connection failed, using polling instead');
+                this.startPolling();
+            };
+        } catch (error) {
+            console.log('WebSocket initialization failed, using polling');
+            this.startPolling();
+        }
+    }
+
     handleVisibilityChange() {
         if (document.hidden) {
             this.stopPolling();
+            this.stopPingInterval();
         } else {
-            this.startPolling();
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                this.startPolling();
+            }
             this.fetchServices();
+        }
+    }
+
+    startPingInterval() {
+        this.pingInterval = setInterval(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ action: 'ping' }));
+            }
+        }, 30000);
+    }
+
+    stopPingInterval() {
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
         }
     }
 
@@ -158,23 +240,41 @@ class ServiceQueue {
     }
 
     async fetchServices() {
-        try {
-            const response = await jQuery.ajax({
-                url: serviceQueueAjax.ajax_url,
-                type: 'POST',
-                data: {
-                    action: 'get_service_requests',
-                    nonce: serviceQueueAjax.nonce
-                }
-            });
+        clearTimeout(this.debounceTimeout);
 
-            if (response.success && Array.isArray(response.data)) {
-                this.updateServices(response.data);
-            } else {
-                throw new Error('Invalid response format');
+        this.debounceTimeout = setTimeout(async () => {
+            try {
+                const response = await jQuery.ajax({
+                    url: serviceQueueAjax.ajax_url,
+                    type: 'POST',
+                    data: {
+                        action: 'get_service_requests',
+                        nonce: serviceQueueAjax.nonce
+                    }
+                });
+
+                if (response.success && Array.isArray(response.data)) {
+                    this.updateServices(response.data);
+                } else {
+                    throw new Error('Invalid response format');
+                }
+            } catch (error) {
+                console.error('Fetch services error:', error);
             }
-        } catch (error) {
-            console.error('Fetch services error:', error);
+        }, this.fetchDebounceTime);
+    }
+
+    handleServiceUpdate(service) {
+        const newService = {
+            ...service,
+            progress: parseInt(service.progress) || 0
+        };
+
+        const existingService = this.services.get(service.service_id);
+        if (!existingService || JSON.stringify(existingService) !== JSON.stringify(newService)) {
+            this.services.set(service.service_id, newService);
+            this.updateServiceCard(service.service_id, newService);
+            this.updateStats();
         }
     }
 
@@ -186,8 +286,72 @@ class ServiceQueue {
                 progress: parseInt(service.progress) || 0
             });
         });
+
+        newServices.forEach((newService, id) => {
+            const existingService = this.services.get(id);
+            if (!existingService || JSON.stringify(existingService) !== JSON.stringify(newService)) {
+                this.updateServiceCard(id, newService);
+            }
+        });
+
+        this.services.forEach((_, id) => {
+            if (!newServices.has(id)) {
+                const card = document.querySelector(`[data-service-id="${id}"]`);
+                if (card) {
+                    card.remove();
+                }
+            }
+        });
+
         this.services = newServices;
-        this.render();
+        this.updateStats();
+    }
+
+    updateServiceCard(serviceId, service) {
+        const card = document.querySelector(`[data-service-id="${serviceId}"]`);
+        if (card) {
+            this.updateExistingCard(card, service);
+        } else {
+            const cardHTML = this.renderServiceCard(service);
+            this.servicesList.insertAdjacentHTML('afterbegin', cardHTML);
+        }
+    }
+
+    updateExistingCard(card, service) {
+        const statusElement = card.querySelector('.sq-status');
+        const progressBar = card.querySelector('.sq-progress-bar');
+        const progressText = card.querySelector('.sq-service-info small:last-child');
+
+        statusElement.className = `sq-status sq-status-${service.status}`;
+        statusElement.textContent = service.status.replace('_', ' ');
+
+        progressBar.style.width = `${service.progress}%`;
+        progressText.textContent = `Progress: ${Math.round(service.progress)}%`;
+
+        card.className = `sq-service-card ${service.status === 'in_progress' ? 'sq-pulse' : ''}`;
+    }
+
+    renderServiceCard(service) {
+        const statusClass = `sq-status-${service.status}`;
+        const pulseClass = service.status === 'in_progress' ? 'sq-pulse' : '';
+
+        return `
+            <div class="sq-service-card ${pulseClass}" data-service-id="${service.service_id}">
+                <div class="sq-service-header">
+                    <span class="sq-service-id">#${service.service_id}</span>
+                    <span class="sq-status ${statusClass}">
+                        ${service.status.replace('_', ' ')}
+                    </span>
+                </div>
+                <div class="sq-progress">
+                    <div class="sq-progress-bar" style="width: ${service.progress}%"></div>
+                </div>
+                <div class="sq-service-info">
+                    <small>Created: ${new Date(service.timestamp).toLocaleString()}</small>
+                    <small>Progress: ${Math.round(service.progress)}%</small>
+                </div>
+            </div>
+        `;
     }
 
     updateStats() {
@@ -198,11 +362,7 @@ class ServiceQueue {
         };
 
         this.services.forEach(service => {
-            if (service.status === 'in_progress') {
-                stats.in_progress++;
-            } else {
-                stats[service.status]++;
-            }
+            stats[service.status]++;
         });
 
         Object.entries(stats).forEach(([key, value]) => {
@@ -210,40 +370,6 @@ class ServiceQueue {
             if (element) element.textContent = value;
         });
     }
-
-    render() {
-        if (!this.servicesList) return;
-
-        this.servicesList.innerHTML = Array.from(this.services.values())
-            .map(service => this.renderServiceCard(service))
-            .join('');
-
-        this.updateStats();
-    }
-
-renderServiceCard(service) {
-    const statusClass = `sq-status-${service.status}`;
-    const pulseClass = service.status === 'in_progress' ? 'sq-pulse' : '';
-    const progressClass = `sq-progress-${service.status}`;
-
-    return `
-        <div class="sq-service-card ${pulseClass}">
-            <div class="sq-service-header">
-                <span class="sq-service-id">#${service.service_id}</span>
-                <span class="sq-status ${statusClass}">
-                    ${service.status.replace('_', ' ')}
-                </span>
-            </div>
-            <div class="sq-progress ${progressClass}">
-                <div class="sq-progress-bar" style="width: ${service.progress}%"></div>
-            </div>
-            <div class="sq-service-info">
-                <small>Created: ${new Date(service.timestamp).toLocaleString()}</small>
-                <small>Progress: ${Math.round(service.progress)}%</small>
-            </div>
-        </div>
-    `;
-}
 
     startPolling() {
         if (this.pollingInterval) return;
@@ -259,6 +385,10 @@ renderServiceCard(service) {
 
     destroy() {
         this.stopPolling();
+        this.stopPingInterval();
+        if (this.ws) {
+            this.ws.close();
+        }
         this.addButton?.removeEventListener('click', this.addService);
         this.resetButton?.removeEventListener('click', this.resetServices);
         this.recreateButton?.removeEventListener('click', this.recreateTable);
