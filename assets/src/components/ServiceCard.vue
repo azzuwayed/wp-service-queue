@@ -1,24 +1,23 @@
 <template>
-  <div
-    class="sq-service-card"
-    :class="{ 'sq-pulse': service.status === 'in_progress' }"
-  >
+  <div class="sq-service-card" :class="{ 'sq-pulse': service.status === 'in_progress' }">
     <div class="sq-service-header">
       <span class="sq-service-id">#{{ service.service_id }}</span>
       <span :class="statusClasses">{{ formattedStatus }}</span>
     </div>
 
     <div class="sq-progress">
-      <div
-        class="sq-progress-bar"
-        :style="{ width: `${service.progress}%` }"
-      ></div>
+      <div class="sq-progress-bar" :style="{ width: `${service.progress}%` }"></div>
     </div>
 
     <div class="sq-service-info">
       <small class="sq-timestamp">{{ formattedDate }}</small>
       <small class="sq-progress-text">
-        Progress: {{ Math.round(service.progress) }}%
+        <template v-if="service.status === 'pending' && service.queue_position > 1">
+          {{ service.queue_position - 1 }} services ahead in queue
+        </template>
+        <template v-else>
+          Progress: {{ Math.round(service.progress) }}%
+        </template>
       </small>
     </div>
   </div>

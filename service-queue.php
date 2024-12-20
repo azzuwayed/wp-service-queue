@@ -17,7 +17,7 @@ define('SERVICE_QUEUE_MIN_PHP_VERSION', '7.4');
 define('SERVICE_QUEUE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('SERVICE_QUEUE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
-define('SERVICE_QUEUE_MAX_USER_REQUESTS', 5); // Maximum concurrent requests per user
+define('SERVICE_QUEUE_MAX_USER_REQUESTS', 2); // Maximum concurrent requests per user
 define('SERVICE_QUEUE_MAX_GLOBAL_PROCESSING', 3); // Maximum concurrent in-progress services
 
 // Ensure Action Scheduler is loaded
@@ -42,5 +42,13 @@ add_action('plugins_loaded', function () {
 // Activation hook
 register_activation_hook(__FILE__, function () {
     $instance = ServiceQueue::getInstance();
+
+    // Drop the table if it exists
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'service_requests';
+    $wpdb->query("DROP TABLE IF EXISTS $table_name");
+
+    // Create the table with new structure
+
     $instance->createTable();
 });

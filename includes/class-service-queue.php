@@ -51,9 +51,13 @@ class ServiceQueue
 
     public function enqueueAssets()
     {
-        // Only enqueue if shortcode is present
+        // Only enqueue if shortcode is present and user is logged in
         global $post;
-        if (is_a($post, 'WP_Post') && has_shortcode($post->post_content, 'service_queue')) {
+        if (
+            is_a($post, 'WP_Post') &&
+            has_shortcode($post->post_content, 'service_queue') &&
+            is_user_logged_in()
+        ) {
             wp_enqueue_style(
                 'service-queue-css',
                 SERVICE_QUEUE_PLUGIN_URL . 'assets/dist/style.css',
@@ -97,6 +101,14 @@ class ServiceQueue
 
     public function renderQueue()
     {
+        // Check if user is logged in
+        if (!is_user_logged_in()) {
+            return sprintf(
+                '<p>%s</p>',
+                esc_html__('Please log in to access the service queue.', 'service-queue')
+            );
+        }
+
         ob_start();
         include SERVICE_QUEUE_PLUGIN_DIR . 'templates/queue.php';
         return ob_get_clean();
@@ -109,20 +121,22 @@ class ServiceQueue
 
         try {
             $sql = "CREATE TABLE IF NOT EXISTS {$this->table_name} (
-                service_id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                user_id BIGINT(20) UNSIGNED NOT NULL,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status ENUM('pending', 'in_progress', 'completed', 'error') DEFAULT 'pending',
-                processing_time INT UNSIGNED NOT NULL,
-                progress TINYINT UNSIGNED DEFAULT 0,
-                retries TINYINT UNSIGNED DEFAULT 0,
-                error_message TEXT,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_status (status),
-                INDEX idx_timestamp (timestamp),
-                INDEX idx_user_status (user_id, status),
-                INDEX idx_status_timestamp (status, timestamp)
-            ) $charset_collate;";
+            service_id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            user_id BIGINT(20) UNSIGNED NOT NULL,
+            queue_position INT UNSIGNED DEFAULT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status ENUM('pending', 'in_progress', 'completed', 'error') DEFAULT 'pending',
+            processing_time INT UNSIGNED NOT NULL,
+            progress TINYINT UNSIGNED DEFAULT 0,
+            retries TINYINT UNSIGNED DEFAULT 0,
+            error_message TEXT,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_status (status),
+            INDEX idx_timestamp (timestamp),
+            INDEX idx_user_status (user_id, status),
+            INDEX idx_status_timestamp (status, timestamp),
+            INDEX idx_queue_position (queue_position)
+        ) $charset_collate;";
 
             require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
             dbDelta($sql);
@@ -145,7 +159,7 @@ class ServiceQueue
         try {
             global $wpdb;
 
-            // Check user limit
+            // Check user limit only
             $current_user_id = get_current_user_id();
             $user_pending_count = $wpdb->get_var($wpdb->prepare(
                 "SELECT COUNT(*) FROM {$this->table_name}
@@ -158,25 +172,22 @@ class ServiceQueue
                 throw new Exception(__('You have reached the maximum number of concurrent requests.', 'service-queue'));
             }
 
-            // Check global processing limit
-            $global_processing_count = $wpdb->get_var(
+            // Check if there are any services in progress or pending
+            $existing_services = $wpdb->get_var(
                 "SELECT COUNT(*) FROM {$this->table_name}
-            WHERE status = 'in_progress'"
+            WHERE status IN ('pending', 'in_progress')"
             );
-
-            if ($global_processing_count >= SERVICE_QUEUE_MAX_GLOBAL_PROCESSING) {
-                throw new Exception(__('System is currently at maximum processing capacity. Please try again later.', 'service-queue'));
-            }
 
             $processing_time = wp_rand(15, 30);
 
             $wpdb->query('START TRANSACTION');
 
             $result = $wpdb->insert($this->table_name, [
-                'status' => 'pending',
+                'status' => $existing_services === '0' ? 'in_progress' : 'pending',
                 'processing_time' => $processing_time,
                 'progress' => 0,
-                'user_id' => $current_user_id
+                'user_id' => $current_user_id,
+                'queue_position' => $existing_services + 1
             ]);
 
             if ($result === false) {
@@ -186,20 +197,24 @@ class ServiceQueue
             $service_id = $wpdb->insert_id;
             $wpdb->query('COMMIT');
 
-            as_schedule_single_action(
-                time(),
-                'process_service_step',
-                [
-                    'service_id' => $service_id,
-                    'step' => 1,
-                    'total_steps' => 20
-                ],
-                'service-queue'
-            );
+            // Schedule processing if this is the first service
+            if ($existing_services === '0') {
+                as_schedule_single_action(
+                    time(),
+                    'process_service_step',
+                    [
+                        'service_id' => $service_id,
+                        'step' => 1,
+                        'total_steps' => 20
+                    ],
+                    'service-queue'
+                );
+            }
 
             wp_send_json_success([
                 'message' => __('Service created successfully', 'service-queue'),
-                'service_id' => $service_id
+                'service_id' => $service_id,
+                'queue_position' => $existing_services + 1
             ]);
         } catch (Exception $e) {
             global $wpdb;
@@ -214,16 +229,19 @@ class ServiceQueue
 
         try {
             global $wpdb;
+            $current_user_id = get_current_user_id();
 
-            $cache_key = 'service_queue_requests';
+            $cache_key = 'service_queue_requests_' . $current_user_id;
             $results = wp_cache_get($cache_key);
 
             if (false === $results) {
                 $results = $wpdb->get_results($wpdb->prepare(
                     "SELECT * FROM {$this->table_name}
-                     WHERE timestamp >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-                     ORDER BY timestamp DESC
-                     LIMIT %d",
+                 WHERE user_id = %d
+                 AND timestamp >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+                 ORDER BY timestamp DESC
+                 LIMIT %d",
+                    $current_user_id,
                     100
                 ));
 
@@ -336,7 +354,37 @@ class ServiceQueue
             }
 
             // Schedule next step if not completed
-            if ($step < $total_steps) {
+            if ($status === 'completed') {
+                // Update queue positions for remaining items
+                $wpdb->query(
+                    "UPDATE {$this->table_name}
+                SET queue_position = queue_position - 1
+                WHERE status = 'pending'
+                AND queue_position > 1"
+                );
+
+                // Start processing next in queue
+                $next_service = $wpdb->get_row(
+                    "SELECT service_id
+                FROM {$this->table_name}
+                WHERE status = 'pending'
+                AND queue_position = 1
+                LIMIT 1"
+                );
+
+                if ($next_service) {
+                    as_schedule_single_action(
+                        time(),
+                        'process_service_step',
+                        [
+                            'service_id' => $next_service->service_id,
+                            'step' => 1,
+                            'total_steps' => $total_steps
+                        ],
+                        'service-queue'
+                    );
+                }
+            } elseif ($step < $total_steps) {
                 as_schedule_single_action(
                     time() + ceil($service->processing_time / $total_steps),
                     'process_service_step',
@@ -350,7 +398,6 @@ class ServiceQueue
             }
         } catch (Exception $e) {
             error_log('Service Processing Error: ' . $e->getMessage());
-
             $wpdb->update(
                 $this->table_name,
                 [
@@ -367,6 +414,15 @@ class ServiceQueue
 
     private function verifyNonce()
     {
+        // Check if user is logged in
+        if (!is_user_logged_in()) {
+            wp_send_json_error([
+                'message' => __('You must be logged in to perform this action.', 'service-queue'),
+                'code' => 401
+            ]);
+        }
+
+        // Check nonce
         if (!check_ajax_referer('service_queue_nonce', 'nonce', false)) {
             wp_send_json_error([
                 'message' => __('Security check failed', 'service-queue'),
