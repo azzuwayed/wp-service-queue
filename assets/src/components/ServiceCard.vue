@@ -1,7 +1,10 @@
 <template>
   <div class="sq-service-card" :class="{ 'sq-pulse': service.status === 'in_progress' }">
     <div class="sq-service-header">
-      <span class="sq-service-id">#{{ service.service_id }}</span>
+      <div class="sq-service-id-wrapper">
+        <span class="sq-service-id">#{{ service.service_id }}</span>
+        <span v-if="service.is_premium" class="sq-premium-badge">Premium</span>
+      </div>
       <span :class="statusClasses">{{ formattedStatus }}</span>
     </div>
 

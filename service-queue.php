@@ -17,8 +17,8 @@ define('SERVICE_QUEUE_MIN_PHP_VERSION', '7.4');
 define('SERVICE_QUEUE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('SERVICE_QUEUE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
-define('SERVICE_QUEUE_MAX_USER_REQUESTS', 2); // Maximum concurrent requests per user
-define('SERVICE_QUEUE_MAX_GLOBAL_PROCESSING', 3); // Maximum concurrent in-progress services
+define('SERVICE_QUEUE_MAX_USER_REQUESTS', 3); // Maximum concurrent requests per user
+define('SERVICE_QUEUE_MAX_GLOBAL_PROCESSING', 5); // Maximum concurrent in-progress services
 
 // Ensure Action Scheduler is loaded
 require_once SERVICE_QUEUE_PLUGIN_DIR . 'vendor/autoload.php';

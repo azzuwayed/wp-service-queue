@@ -158,9 +158,9 @@ class ServiceQueue
 
         try {
             global $wpdb;
-
-            // Check user limit only
             $current_user_id = get_current_user_id();
+
+            // Check user limit for all users
             $user_pending_count = $wpdb->get_var($wpdb->prepare(
                 "SELECT COUNT(*) FROM {$this->table_name}
             WHERE status IN ('pending', 'in_progress')
@@ -172,22 +172,28 @@ class ServiceQueue
                 throw new Exception(__('You have reached the maximum number of concurrent requests.', 'service-queue'));
             }
 
-            // Check if there are any services in progress or pending
-            $existing_services = $wpdb->get_var(
-                "SELECT COUNT(*) FROM {$this->table_name}
-            WHERE status IN ('pending', 'in_progress')"
-            );
-
-            $processing_time = wp_rand(15, 30);
+            $processing_time = wp_rand(10, 30);
+            $is_premium = $this->isPremiumUser($current_user_id);
 
             $wpdb->query('START TRANSACTION');
 
+            // For premium users, always set as in_progress
+            // For regular users, check existing services
+            $status = $is_premium ? 'in_progress' : 'pending';
+            if (!$is_premium) {
+                $existing_services = $wpdb->get_var(
+                    "SELECT COUNT(*) FROM {$this->table_name}
+                WHERE status IN ('pending', 'in_progress')"
+                );
+                $status = ($existing_services === '0') ? 'in_progress' : 'pending';
+            }
+
             $result = $wpdb->insert($this->table_name, [
-                'status' => $existing_services === '0' ? 'in_progress' : 'pending',
+                'status' => $status,
                 'processing_time' => $processing_time,
                 'progress' => 0,
                 'user_id' => $current_user_id,
-                'queue_position' => $existing_services + 1
+                'queue_position' => $status === 'in_progress' ? 0 : $existing_services + 1
             ]);
 
             if ($result === false) {
@@ -197,8 +203,8 @@ class ServiceQueue
             $service_id = $wpdb->insert_id;
             $wpdb->query('COMMIT');
 
-            // Schedule processing if this is the first service
-            if ($existing_services === '0') {
+            // Schedule processing immediately for premium users or if first in queue
+            if ($status === 'in_progress') {
                 as_schedule_single_action(
                     time(),
                     'process_service_step',
@@ -214,7 +220,7 @@ class ServiceQueue
             wp_send_json_success([
                 'message' => __('Service created successfully', 'service-queue'),
                 'service_id' => $service_id,
-                'queue_position' => $existing_services + 1
+                'is_premium' => $is_premium
             ]);
         } catch (Exception $e) {
             global $wpdb;
@@ -230,6 +236,7 @@ class ServiceQueue
         try {
             global $wpdb;
             $current_user_id = get_current_user_id();
+            $is_premium = $this->isPremiumUser($current_user_id);
 
             $cache_key = 'service_queue_requests_' . $current_user_id;
             $results = wp_cache_get($cache_key);
@@ -237,13 +244,18 @@ class ServiceQueue
             if (false === $results) {
                 $results = $wpdb->get_results($wpdb->prepare(
                     "SELECT * FROM {$this->table_name}
-                 WHERE user_id = %d
-                 AND timestamp >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-                 ORDER BY timestamp DESC
-                 LIMIT %d",
+                WHERE user_id = %d
+                AND timestamp >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+                ORDER BY timestamp DESC
+                LIMIT %d",
                     $current_user_id,
                     100
                 ));
+
+                // Add premium status to results
+                foreach ($results as $result) {
+                    $result->is_premium = $is_premium;
+                }
 
                 wp_cache_set($cache_key, $results, '', 30);
             }
@@ -444,5 +456,12 @@ class ServiceQueue
             PHP_VERSION
         );
         echo '<div class="notice notice-error"><p>' . esc_html($message) . '</p></div>';
+    }
+
+    private function isPremiumUser($user_id)
+    {
+        // Example implementation - modify based on your user group logic
+        $user = get_user_by('id', $user_id);
+        return user_can($user, 'premium_member') || user_can($user, 'administrator');
     }
 }

@@ -325,3 +325,19 @@
 .sq-pulse {
     animation: pulse 2s infinite;
 }
+
+.sq-service-id-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.sq-premium-badge {
+    background: linear-gradient(45deg, #FFD700, #FFA500);
+    color: #000;
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
