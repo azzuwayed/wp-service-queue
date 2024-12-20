@@ -44,6 +44,9 @@ class ServiceQueue
         }
 
         add_action('process_service_request', [$this, 'processRequest']);
+
+        // Add Action Scheduler hook
+        add_action('process_service_step', [$this, 'processServiceStep'], 10, 3);
     }
 
     public function enqueueAssets()
@@ -156,7 +159,17 @@ class ServiceQueue
             $service_id = $wpdb->insert_id;
             $wpdb->query('COMMIT');
 
-            wp_schedule_single_event(time(), 'process_service_request', [$service_id]);
+            // Schedule the initial processing using Action Scheduler
+            as_schedule_single_action(
+                time(),
+                'process_service_step',
+                [
+                    'service_id' => $service_id,
+                    'step' => 1,
+                    'total_steps' => 20
+                ],
+                'service-queue'
+            );
 
             wp_send_json_success([
                 'message' => __('Service created successfully', 'service-queue'),
@@ -238,7 +251,10 @@ class ServiceQueue
         }
     }
 
-    public function processRequest($service_id)
+    /**
+     * Process a single step of the service request
+     */
+    public function processServiceStep($service_id, $step, $total_steps)
     {
         global $wpdb;
         $lock_key = "service_lock_{$service_id}";
@@ -249,54 +265,64 @@ class ServiceQueue
         ));
 
         if (!$lock_result || !$lock_result->locked) {
-            error_log("Failed to acquire lock for service {$service_id}");
+            // Reschedule this step if we couldn't get a lock
+            as_schedule_single_action(
+                time() + 10,
+                'process_service_step',
+                [
+                    'service_id' => $service_id,
+                    'step' => $step,
+                    'total_steps' => $total_steps
+                ],
+                'service-queue'
+            );
             return;
         }
 
         try {
-            $wpdb->query('START TRANSACTION');
-
             $service = $wpdb->get_row($wpdb->prepare(
-                "SELECT * FROM {$this->table_name}
-                 WHERE service_id = %d
-                 AND status IN ('pending', 'in_progress')
-                 FOR UPDATE",
+                "SELECT * FROM {$this->table_name} WHERE service_id = %d",
                 $service_id
             ));
 
             if (!$service) {
-                throw new Exception('Service not found or already completed');
+                throw new Exception('Service not found');
             }
 
-            $steps = 20;
-            $step_time = (int)ceil($service->processing_time / $steps);
+            // Calculate progress
+            $progress = ($step / $total_steps) * 100;
 
-            for ($i = 1; $i <= $steps; $i++) {
-                $progress = ($i / $steps) * 100;
-                $status = $i === $steps ? 'completed' : 'in_progress';
+            // Update status and progress
+            $status = ($step === $total_steps) ? 'completed' : 'in_progress';
 
-                $updated = $wpdb->update(
-                    $this->table_name,
+            $updated = $wpdb->update(
+                $this->table_name,
+                [
+                    'status' => $status,
+                    'progress' => $progress,
+                    'last_updated' => current_time('mysql')
+                ],
+                ['service_id' => $service_id]
+            );
+
+            if ($updated === false) {
+                throw new Exception('Failed to update service progress');
+            }
+
+            // Schedule next step if not completed
+            if ($step < $total_steps) {
+                as_schedule_single_action(
+                    time() + ceil($service->processing_time / $total_steps),
+                    'process_service_step',
                     [
-                        'status' => $status,
-                        'progress' => $progress,
-                        'last_updated' => current_time('mysql')
+                        'service_id' => $service_id,
+                        'step' => $step + 1,
+                        'total_steps' => $total_steps
                     ],
-                    ['service_id' => $service_id]
+                    'service-queue'
                 );
-
-                if ($updated === false) {
-                    throw new Exception('Failed to update service progress');
-                }
-
-                if ($i < $steps) {
-                    sleep($step_time);
-                }
             }
-
-            $wpdb->query('COMMIT');
         } catch (Exception $e) {
-            $wpdb->query('ROLLBACK');
             error_log('Service Processing Error: ' . $e->getMessage());
 
             $wpdb->update(
