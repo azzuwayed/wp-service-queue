@@ -1,11 +1,13 @@
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed } from 'vue'
 import { useToast } from './useToast'
 
 export function useServices() {
     const services = ref([])
     const isLoading = ref(false)
-    const pollInterval = ref(null)
+    const pollingInterval = ref(null)
     const { showToast } = useToast()
+    const pollTimeoutId = ref(null)
+    const isVisible = ref(document.visibilityState === 'visible')
 
     const stats = computed(() => ({
         pending: services.value.filter(s => s.status === 'pending').length,
@@ -13,20 +15,9 @@ export function useServices() {
         completed: services.value.filter(s => s.status === 'completed').length
     }))
 
-    // Add visibility tracking
-    const isVisible = ref(document.visibilityState === 'visible')
-
-    // Handle visibility change
-    function handleVisibilityChange() {
-        isVisible.value = document.visibilityState === 'visible'
-        if (isVisible.value) {
-            startPolling() // Resume polling when visible
-        } else {
-            stopPolling() // Stop polling when hidden
-        }
-    }
-
     async function fetchServices() {
+        if (!isVisible.value) return
+
         try {
             const response = await fetch(serviceQueueAjax.ajax_url, {
                 method: 'POST',
@@ -39,39 +30,52 @@ export function useServices() {
                 })
             })
 
+            if (!response.ok) {
+                throw new Error(serviceQueueAjax.translations.networkError)
+            }
+
             const data = await response.json()
             if (data.success) {
                 services.value = data.data
+            } else {
+                throw new Error(data.data.message)
             }
         } catch (error) {
             showToast(error.message, 'error')
         }
     }
 
-async function addService() {
-    try {
-        const response = await fetch(serviceQueueAjax.ajax_url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: new URLSearchParams({
-                action: 'add_service_request',
-                nonce: serviceQueueAjax.nonce
+    async function addService() {
+        try {
+            isLoading.value = true
+            const response = await fetch(serviceQueueAjax.ajax_url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams({
+                    action: 'add_service_request',
+                    nonce: serviceQueueAjax.nonce
+                })
             })
-        });
 
-        const data = await response.json();
-        if (data.success) {
-            showToast(data.data.message, 'success');
-            await fetchServices();
-        } else {
-            throw new Error(data.data.message);
+            if (!response.ok) {
+                throw new Error(serviceQueueAjax.translations.networkError)
+            }
+
+            const data = await response.json()
+            if (data.success) {
+                showToast(data.data.message, 'success')
+                await fetchServices()
+            } else {
+                throw new Error(data.data.message)
+            }
+        } catch (error) {
+            showToast(error.message, 'error')
+        } finally {
+            isLoading.value = false
         }
-    } catch (error) {
-        showToast(error.message, 'error');
     }
-}
 
     async function resetServices() {
         try {
@@ -86,6 +90,10 @@ async function addService() {
                     nonce: serviceQueueAjax.nonce
                 })
             })
+
+            if (!response.ok) {
+                throw new Error(serviceQueueAjax.translations.networkError)
+            }
 
             const data = await response.json()
             if (data.success) {
@@ -115,6 +123,10 @@ async function addService() {
                 })
             })
 
+            if (!response.ok) {
+                throw new Error(serviceQueueAjax.translations.networkError)
+            }
+
             const data = await response.json()
             if (data.success) {
                 showToast(data.data, 'success')
@@ -130,29 +142,36 @@ async function addService() {
     }
 
     function startPolling() {
-        if (!pollInterval.value && isVisible.value) {
-            fetchServices()
-            pollInterval.value = setInterval(fetchServices, 2000)
-        }
+        if (pollingInterval.value) return
+
+        fetchServices()
+        pollingInterval.value = setInterval(() => {
+            if (!document.hidden) {
+                fetchServices()
+            }
+        }, serviceQueueAjax.pollingInterval || 5000)
     }
 
     function stopPolling() {
-        if (pollInterval.value) {
-            clearInterval(pollInterval.value)
-            pollInterval.value = null
+        if (pollingInterval.value) {
+            clearInterval(pollingInterval.value)
+            pollingInterval.value = null
         }
     }
 
-    // Add event listener for visibility changes
-    onMounted(() => {
-        document.addEventListener('visibilitychange', handleVisibilityChange)
-    })
+    function handleVisibilityChange() {
+        isVisible.value = document.visibilityState === 'visible'
+        if (isVisible.value) {
+            startPolling()
+        } else {
+            stopPolling()
+        }
+    }
 
-    // Clean up event listener
-    onUnmounted(() => {
-        document.removeEventListener('visibilitychange', handleVisibilityChange)
-        stopPolling()
-    })
+    // Setup visibility handling
+    if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', handleVisibilityChange)
+    }
 
     return {
         services,
