@@ -17,11 +17,25 @@ define('SERVICE_QUEUE_MIN_PHP_VERSION', '7.4');
 define('SERVICE_QUEUE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('SERVICE_QUEUE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
-define('SERVICE_QUEUE_MAX_USER_REQUESTS', 3); // Maximum concurrent requests per user
-define('SERVICE_QUEUE_MAX_GLOBAL_PROCESSING', 5); // Maximum concurrent in-progress services
+// Global concurrent processing limits for different load levels
+define('SERVICE_QUEUE_GLOBAL_HIGH_LOAD', 5);    // When system load > 70%
+define('SERVICE_QUEUE_GLOBAL_MEDIUM_LOAD', 10); // When system load 30-70%
+define('SERVICE_QUEUE_GLOBAL_LOW_LOAD', 20);    // When system load < 30%
+
+// Premium user concurrent request limits
+define('SERVICE_QUEUE_PREMIUM_HIGH_LOAD', 3);   // When system load > 70%
+define('SERVICE_QUEUE_PREMIUM_MEDIUM_LOAD', 5); // When system load 30-70%
+define('SERVICE_QUEUE_PREMIUM_LOW_LOAD', 8);    // When system load < 30%
+
+// Free user concurrent request limits
+define('SERVICE_QUEUE_FREE_HIGH_LOAD', 1);      // When system load > 70%
+define('SERVICE_QUEUE_FREE_MEDIUM_LOAD', 2);    // When system load 30-70%
+define('SERVICE_QUEUE_FREE_LOW_LOAD', 4);       // When system load < 30%
 
 // Ensure Action Scheduler is loaded
 require_once SERVICE_QUEUE_PLUGIN_DIR . 'vendor/autoload.php';
+
+require_once SERVICE_QUEUE_PLUGIN_DIR . 'includes/class-resource-manager.php';
 
 // Initialize Action Scheduler properly
 function init_action_scheduler()

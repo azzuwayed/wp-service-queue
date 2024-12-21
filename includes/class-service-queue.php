@@ -29,6 +29,7 @@ class ServiceQueue
 
         add_action('init', [$this, 'initializePlugin']);
         add_action('wp_enqueue_scripts', [$this, 'enqueueAssets']);
+        add_action("wp_ajax_get_system_status", [$this, "handleGetSystemStatus"]);
 
         // AJAX handlers
         $ajax_actions = [
@@ -47,17 +48,36 @@ class ServiceQueue
 
         // Add Action Scheduler hook
         add_action('process_service_step', [$this, 'processServiceStep'], 10, 3);
+
+        add_filter('theme_page_templates', [$this, 'addServiceQueueTemplate']);
+        add_filter('template_include', [$this, 'loadServiceQueueTemplate']);
+    }
+
+    public function addServiceQueueTemplate($templates)
+    {
+        $templates['page-service-queue.php'] = __('Service Queue App', 'service-queue');
+        return $templates;
+    }
+
+    public function loadServiceQueueTemplate($template)
+    {
+        if (is_page_template('page-service-queue.php')) {
+            $template = SERVICE_QUEUE_PLUGIN_DIR . 'templates/page-service-queue.php';
+        }
+        return $template;
     }
 
     public function enqueueAssets()
     {
         // Only enqueue if shortcode is present and user is logged in
-        global $post;
         if (
-            is_a($post, 'WP_Post') &&
-            has_shortcode($post->post_content, 'service_queue') &&
-            is_user_logged_in()
+            is_page_template('page-service-queue.php') ||
+            (is_a($GLOBALS['post'], 'WP_Post') && has_shortcode($GLOBALS['post']->post_content, 'service_queue'))
         ) {
+            if (!is_user_logged_in()) {
+                return;
+            }
+
             wp_enqueue_style(
                 'service-queue-css',
                 SERVICE_QUEUE_PLUGIN_URL . 'assets/dist/style.css',
@@ -91,6 +111,13 @@ class ServiceQueue
             'completed' => __('Completed', 'service-queue'),
             'error' => __('Error', 'service-queue'),
             'loading' => __('Loading...', 'service-queue'),
+            'systemStatus' => __('System Status', 'service-queue'),
+            'loadLevel' => __('Load Level', 'service-queue'),
+            'systemLoad' => __('System Load', 'service-queue'),
+            'queueSize' => __('Queue Size', 'service-queue'),
+            'globalLimit' => __('Global Limit', 'service-queue'),
+            'premiumLimit' => __('Premium User Limit', 'service-queue'),
+            'freeLimit' => __('Free User Limit', 'service-queue')
         ];
     }
 
@@ -126,9 +153,10 @@ class ServiceQueue
             queue_position INT UNSIGNED DEFAULT NULL,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             status ENUM('pending', 'in_progress', 'completed', 'error') DEFAULT 'pending',
-            processing_time INT UNSIGNED NOT NULL,
+            processing_time INT UNSIGNED NOT NULL DEFAULT 0,
             progress TINYINT UNSIGNED DEFAULT 0,
             retries TINYINT UNSIGNED DEFAULT 0,
+            is_premium BOOLEAN DEFAULT 0,
             error_message TEXT,
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_status (status),
@@ -156,78 +184,69 @@ class ServiceQueue
     {
         $this->verifyNonce();
 
+        global $wpdb;
+        $wpdb->query('START TRANSACTION');
+
         try {
-            global $wpdb;
             $current_user_id = get_current_user_id();
-
-            // Check user limit for all users
-            $user_pending_count = $wpdb->get_var($wpdb->prepare(
-                "SELECT COUNT(*) FROM {$this->table_name}
-            WHERE status IN ('pending', 'in_progress')
-            AND user_id = %d",
-                $current_user_id
-            ));
-
-            if ($user_pending_count >= SERVICE_QUEUE_MAX_USER_REQUESTS) {
-                throw new Exception(__('You have reached the maximum number of concurrent requests.', 'service-queue'));
+            if (!$current_user_id) {
+                throw new Exception(__('You must be logged in to create a service request', 'service-queue'));
             }
 
-            $processing_time = wp_rand(10, 30);
-            $is_premium = $this->isPremiumUser($current_user_id);
+            $resource_manager = ServiceQueueResourceManager::getInstance();
 
-            $wpdb->query('START TRANSACTION');
-
-            // For premium users, always set as in_progress
-            // For regular users, check existing services
-            $status = $is_premium ? 'in_progress' : 'pending';
-            if (!$is_premium) {
-                $existing_services = $wpdb->get_var(
-                    "SELECT COUNT(*) FROM {$this->table_name}
-                WHERE status IN ('pending', 'in_progress')"
-                );
-                $status = ($existing_services === '0') ? 'in_progress' : 'pending';
+            if (!$resource_manager->canAcceptNewRequest($current_user_id)) {
+                throw new Exception(__('System is currently at capacity. Please try again later.', 'service-queue'));
             }
 
-            $result = $wpdb->insert($this->table_name, [
-                'status' => $status,
-                'processing_time' => $processing_time,
-                'progress' => 0,
-                'user_id' => $current_user_id,
-                'queue_position' => $status === 'in_progress' ? 0 : $existing_services + 1
-            ]);
+            // Get current queue position
+            $queue_position = $wpdb->get_var(
+                "SELECT COUNT(*) + 1 FROM {$this->table_name}
+             WHERE status IN ('pending', 'in_progress')"
+            );
 
-            if ($result === false) {
-                throw new Exception($wpdb->last_error);
+            // Insert new service request
+            $result = $wpdb->insert(
+                $this->table_name,
+                [
+                    'user_id' => $current_user_id,
+                    'status' => 'pending',
+                    'progress' => 0,
+                    'queue_position' => $queue_position,
+                    'timestamp' => current_time('mysql'),
+                    'is_premium' => $resource_manager->isPremiumUser($current_user_id)
+                ],
+                ['%d', '%s', '%d', '%d', '%s', '%d']
+            );
+
+            if (!$result) {
+                throw new Exception(__('Failed to create service request', 'service-queue'));
             }
 
             $service_id = $wpdb->insert_id;
+
+            // Schedule the first processing attempt
+            as_schedule_single_action(
+                time(),
+                'process_service_request',
+                ['service_id' => $service_id],
+                'service-queue'
+            );
+
             $wpdb->query('COMMIT');
 
-            // Schedule processing immediately for premium users or if first in queue
-            if ($status === 'in_progress') {
-                as_schedule_single_action(
-                    time(),
-                    'process_service_step',
-                    [
-                        'service_id' => $service_id,
-                        'step' => 1,
-                        'total_steps' => 20
-                    ],
-                    'service-queue'
-                );
-            }
+            $resource_manager->incrementUserRequests($current_user_id);
 
             wp_send_json_success([
-                'message' => __('Service created successfully', 'service-queue'),
-                'service_id' => $service_id,
-                'is_premium' => $is_premium
+                'message' => __('Service request created successfully', 'service-queue'),
+                'service_id' => $service_id
             ]);
         } catch (Exception $e) {
-            global $wpdb;
             $wpdb->query('ROLLBACK');
             wp_send_json_error(['message' => $e->getMessage()]);
         }
     }
+
 
     public function handleGetServiceRequests()
     {
@@ -236,7 +255,10 @@ class ServiceQueue
         try {
             global $wpdb;
             $current_user_id = get_current_user_id();
-            $is_premium = $this->isPremiumUser($current_user_id);
+
+            // Get the resource manager instance
+            $resource_manager = ServiceQueueResourceManager::getInstance();
+            $is_premium = $resource_manager->isPremiumUser($current_user_id);
 
             $cache_key = 'service_queue_requests_' . $current_user_id;
             $results = wp_cache_get($cache_key);
@@ -310,96 +332,62 @@ class ServiceQueue
     /**
      * Process a single step of the service request
      */
-    public function processServiceStep($service_id, $step, $total_steps)
+    public function processServiceStep($service_id, $step = 1, $total_steps = 10)
     {
         global $wpdb;
-        $lock_key = "service_lock_{$service_id}";
-
-        $lock_result = $wpdb->get_row($wpdb->prepare(
-            "SELECT GET_LOCK(%s, 10) as locked",
-            $lock_key
-        ));
-
-        if (!$lock_result || !$lock_result->locked) {
-            // Reschedule this step if we couldn't get a lock
-            as_schedule_single_action(
-                time() + 10,
-                'process_service_step',
-                [
-                    'service_id' => $service_id,
-                    'step' => $step,
-                    'total_steps' => $total_steps
-                ],
-                'service-queue'
-            );
-            return;
-        }
+        $wpdb->query('START TRANSACTION');
 
         try {
+            // Get current service status
             $service = $wpdb->get_row($wpdb->prepare(
-                "SELECT * FROM {$this->table_name} WHERE service_id = %d",
+                "SELECT * FROM {$this->table_name} WHERE service_id = %d FOR UPDATE",
                 $service_id
             ));
 
             if (!$service) {
-                throw new Exception('Service not found');
+                throw new Exception("Service not found: {$service_id}");
+            }
+
+            if ($service->status === 'completed' || $service->status === 'error') {
+                $wpdb->query('COMMIT');
+                return;
+            }
+
+            // Update status to in_progress if pending
+            if ($service->status === 'pending') {
+                $wpdb->update(
+                    $this->table_name,
+                    ['status' => 'in_progress'],
+                    ['service_id' => $service_id],
+                    ['%s'],
+                    ['%d']
+                );
             }
 
             // Calculate progress
-            $progress = ($step / $total_steps) * 100;
+            $progress = min(100, ($step / $total_steps) * 100);
+            $status = $progress >= 100 ? 'completed' : 'in_progress';
 
-            // Update status and progress
-            $status = ($step === $total_steps) ? 'completed' : 'in_progress';
+            // Simulate work with random delay
+            usleep(rand(100000, 500000)); // 0.1 to 0.5 seconds
 
-            $updated = $wpdb->update(
+            // Update progress
+            $wpdb->update(
                 $this->table_name,
                 [
-                    'status' => $status,
                     'progress' => $progress,
-                    'last_updated' => current_time('mysql')
+                    'status' => $status
                 ],
-                ['service_id' => $service_id]
+                ['service_id' => $service_id],
+                ['%d', '%s'],
+                ['%d']
             );
 
-            if ($updated === false) {
-                throw new Exception('Failed to update service progress');
-            }
-
-            // Schedule next step if not completed
-            if ($status === 'completed') {
-                // Update queue positions for remaining items
-                $wpdb->query(
-                    "UPDATE {$this->table_name}
-                SET queue_position = queue_position - 1
-                WHERE status = 'pending'
-                AND queue_position > 1"
-                );
-
-                // Start processing next in queue
-                $next_service = $wpdb->get_row(
-                    "SELECT service_id
-                FROM {$this->table_name}
-                WHERE status = 'pending'
-                AND queue_position = 1
-                LIMIT 1"
-                );
-
-                if ($next_service) {
-                    as_schedule_single_action(
-                        time(),
-                        'process_service_step',
-                        [
-                            'service_id' => $next_service->service_id,
-                            'step' => 1,
-                            'total_steps' => $total_steps
-                        ],
-                        'service-queue'
-                    );
-                }
-            } elseif ($step < $total_steps) {
+            // Schedule next step if not complete
+            if ($status !== 'completed') {
                 as_schedule_single_action(
-                    time() + ceil($service->processing_time / $total_steps),
-                    'process_service_step',
+                    time() + rand(1, 5),
+                    'process_service_request',
                     [
                         'service_id' => $service_id,
                         'step' => $step + 1,
@@ -407,20 +395,36 @@ class ServiceQueue
                     ],
                     'service-queue'
                 );
+            } else {
+                // Service is completed, decrement user requests
+                $resource_manager = ServiceQueueResourceManager::getInstance();
+                $resource_manager->decrementUserRequests($service->user_id);
+
+                // Update queue positions for remaining services
+                $wpdb->query(
+                    "UPDATE {$this->table_name}
+                 SET queue_position = queue_position - 1
+                 WHERE status = 'pending'
+                 AND queue_position > {$service->queue_position}"
+                );
             }
+
+            $wpdb->query('COMMIT');
         } catch (Exception $e) {
-            error_log('Service Processing Error: ' . $e->getMessage());
+            $wpdb->query('ROLLBACK');
+            error_log("Service Queue Error: " . $e->getMessage());
+
+            // Update service status to error
             $wpdb->update(
                 $this->table_name,
                 [
                     'status' => 'error',
-                    'error_message' => $e->getMessage(),
-                    'last_updated' => current_time('mysql')
+                    'error_message' => $e->getMessage()
                 ],
-                ['service_id' => $service_id]
+                ['service_id' => $service_id],
+                ['%s', '%s'],
+                ['%d']
             );
-        } finally {
-            $wpdb->query($wpdb->prepare("SELECT RELEASE_LOCK(%s)", $lock_key));
         }
     }
 
@@ -458,10 +462,35 @@ class ServiceQueue
         echo '<div class="notice notice-error"><p>' . esc_html($message) . '</p></div>';
     }
 
-    private function isPremiumUser($user_id)
+    public function handleGetSystemStatus()
     {
-        // Example implementation - modify based on your user group logic
-        $user = get_user_by('id', $user_id);
-        return user_can($user, 'premium_member') || user_can($user, 'administrator');
+        try {
+            check_ajax_referer('service_queue_nonce', 'nonce');
+
+            if (!is_user_logged_in()) {
+                wp_send_json_error([
+                    'message' => 'User not logged in',
+                    'code' => 401
+                ]);
+            }
+
+            $resource_manager = ServiceQueueResourceManager::getInstance();
+            $status = $resource_manager->getSystemStatus();
+
+            if (!$status) {
+                wp_send_json_error([
+                    'message' => 'Failed to get system status',
+                    'code' => 500
+                ]);
+            }
+
+            wp_send_json_success($status);
+        } catch (Exception $e) {
+            error_log('Service Queue System Status Error: ' . $e->getMessage());
+            wp_send_json_error([
+                'message' => $e->getMessage(),
+                'code' => 500
+            ]);
+        }
     }
 }

@@ -341,3 +341,127 @@
     font-weight: 600;
     text-transform: uppercase;
 }
+
+.sq-system-status {
+    width: 100%;
+    margin-bottom: 20px;
+}
+
+.sq-status-box {
+    padding: 20px;
+    border-radius: 12px;
+    color: white;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    transition: all 0.3s ease;
+}
+
+.sq-status-low {
+    background: linear-gradient(135deg, #22c55e, #16a34a);
+}
+
+.sq-status-medium {
+    background: linear-gradient(135deg, #eab308, #ca8a04);
+}
+
+.sq-status-high {
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+}
+
+.sq-status-header {
+    margin-bottom: 15px;
+}
+
+.sq-status-label {
+    display: block;
+    font-size: 0.9rem;
+    opacity: 0.9;
+    margin-bottom: 5px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.sq-status-value {
+    display: block;
+    font-size: 1.75rem;
+    font-weight: 700;
+}
+
+.sq-load-details {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+}
+
+.sq-load-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.sq-load-label {
+    font-size: 0.8rem;
+    opacity: 0.9;
+}
+
+.sq-load-value {
+    font-size: 1.1rem;
+    font-weight: 600;
+}
+
+.sq-limits {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+}
+
+.sq-limit-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 8px;
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    transition: transform 0.2s ease;
+}
+
+.sq-limit-item:hover {
+    transform: translateY(-2px);
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.sq-limit-icon {
+    font-size: 1.2rem;
+    margin-bottom: 8px;
+}
+
+.sq-limit-label {
+    font-size: 0.75rem;
+    opacity: 0.9;
+    text-align: center;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.sq-limit-value {
+    font-size: 1.2rem;
+    font-weight: 700;
+}
+
+@media (max-width: 768px) {
+    .sq-load-details {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .sq-limits {
+        grid-template-columns: 1fr;
+    }
+
+    .sq-limit-item {
+        padding: 15px;
+    }
+}

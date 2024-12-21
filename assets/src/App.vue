@@ -1,7 +1,10 @@
 <template>
   <div class="service-queue-app">
     <div class="sq-header">
-      <stats-panel :stats="stats" />
+      <div class="sq-header-stats">
+        <system-status />
+        <stats-panel :stats="stats" />
+      </div>
       <action-panel
         :loading="isLoading"
         @add="addService"
@@ -33,6 +36,7 @@
 <script setup>
 import { onMounted, onUnmounted } from "vue";
 import StatsPanel from "./components/StatsPanel.vue";
+import SystemStatus from "./components/SystemStatus.vue";
 import ActionPanel from "./components/ActionPanel.vue";
 import ServiceCard from "./components/ServiceCard.vue";
 import ToastMessage from "./components/ToastMessage.vue";
@@ -61,3 +65,11 @@ onUnmounted(() => {
   stopPolling();
 });
 </script>
+
+<style>
+.sq-header-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+</style>
