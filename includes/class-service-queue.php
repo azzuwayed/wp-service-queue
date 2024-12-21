@@ -44,9 +44,7 @@ class ServiceQueue
             add_action("wp_ajax_nopriv_{$action}", [$this, "handle" . $this->toCamelCase($action)]);
         }
 
-        add_action('process_service_request', [$this, 'processRequest']);
-
-        // Add Action Scheduler hook
+        add_action('process_service_request', [$this, 'processRequest'], 10, 1);
         add_action('process_service_step', [$this, 'processServiceStep'], 10, 3);
 
         add_filter('theme_page_templates', [$this, 'addServiceQueueTemplate']);
@@ -338,9 +336,13 @@ class ServiceQueue
         $wpdb->query('START TRANSACTION');
 
         try {
-            // Get current service status
+            // Get current service status with user info
             $service = $wpdb->get_row($wpdb->prepare(
-                "SELECT * FROM {$this->table_name} WHERE service_id = %d FOR UPDATE",
+                "SELECT s.*, u.ID as user_id
+             FROM {$this->table_name} s
+             LEFT JOIN {$wpdb->users} u ON s.user_id = u.ID
+             WHERE service_id = %d
+             FOR UPDATE",
                 $service_id
             ));
 
@@ -368,25 +370,36 @@ class ServiceQueue
             $progress = min(100, ($step / $total_steps) * 100);
             $status = $progress >= 100 ? 'completed' : 'in_progress';
 
-            // Simulate work with random delay
-            usleep(rand(100000, 500000)); // 0.1 to 0.5 seconds
+            // Enhanced processing simulation based on user type
+            $resource_manager = ServiceQueueResourceManager::getInstance();
+            $is_premium = $resource_manager->isPremiumUser($service->user_id);
+
+            // Premium users get faster processing
+            $min_delay = $is_premium ? 50000 : 100000;  // 0.05s vs 0.1s
+            $max_delay = $is_premium ? 250000 : 500000; // 0.25s vs 0.5s
+
+            // Simulate work with variable delay
+            usleep(rand($min_delay, $max_delay));
 
             // Update progress
             $wpdb->update(
                 $this->table_name,
                 [
                     'progress' => $progress,
-                    'status' => $status
+                    'status' => $status,
+                    'processing_time' => time() - strtotime($service->timestamp)
                 ],
                 ['service_id' => $service_id],
-                ['%d', '%s'],
+                ['%d', '%s', '%d'],
                 ['%d']
             );
 
-            // Schedule next step if not complete
+            // Schedule next step if not complete with priority for premium users
             if ($status !== 'completed') {
+                $next_step_delay = $is_premium ? rand(1, 3) : rand(2, 5);
+
                 as_schedule_single_action(
-                    time() + rand(1, 5),
+                    time() + $next_step_delay,
                     'process_service_request',
                     [
                         'service_id' => $service_id,
@@ -397,7 +410,6 @@ class ServiceQueue
                 );
             } else {
                 // Service is completed, decrement user requests
-                $resource_manager = ServiceQueueResourceManager::getInstance();
                 $resource_manager->decrementUserRequests($service->user_id);
 
                 // Update queue positions for remaining services
@@ -492,5 +504,10 @@ class ServiceQueue
                 'code' => 500
             ]);
         }
+    }
+    public function processRequest($service_id)
+    {
+        // Start processing from step 1
+        $this->processServiceStep($service_id, 1, 10);
     }
 }
